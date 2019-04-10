@@ -1,0 +1,138 @@
+---
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Load neccessary dependencies
+
+library(tidyverse)
+library(sf)
+library(fs)
+library(ggthemes)
+library(lubridate)
+library(stringr)
+library(gt)
+library(gganimate)
+library(devtools)
+library(transformr)
+
+```
+
+```{r data, echo=FALSE, cache=TRUE}
+
+# Obtain rds file for stops in Columbus, which can be read in directly from the website
+
+columbus <- read_rds(url("https://stacks.stanford.edu/file/druid:tr137st9964/tr137st9964_oh_columbus_2019_02_25.rds"))
+
+# Download compressed shapefile
+
+download.file(url = "https://stacks.stanford.edu/file/druid:tr137st9964/tr137st9964_oh_columbus_shapefiles_2019_02_25.tgz", destfile = "shapes.tgz", 
+              quiet = TRUE)
+
+# Uncompress shapes file
+
+untar("shapes.tgz")
+
+# Read data into a tibble
+
+shapes_columbus <- read_sf("oh_columbus_shapefiles/shapes.shp")
+
+# Delete the old files
+
+file_delete(c("shapes.tgz", "oh_columbus_shapefiles/"))
+
+```
+
+```{r q5, echo=FALSE, cache=TRUE}
+
+# The challenge for creating an animated map with the Columbus data was finding an interesting subset of the data that was small enough to render in a reasonable amount of time. For this reason, I decided to limit the data I plotted to 2016, the most recent year of data in this dataset.
+
+# My goal was to plot activity over the course of a day while ignoring the specific date, thus getting a sense of hourly trends in activity. For example, are arrests predictably more frequent during rush hour. Who, if anyone, is being arrested late at night and early in the morning
+
+columbus2 <- columbus %>% 
+  
+  # Removed data points with NA latitudes, longitudes, or zones, as these points would cause errors in the mapping because of missing geospatial data
+  
+  filter(!is.na(lat), 
+         !is.na(lng),
+         !is.na(zone),
+         
+         # Restrict the data to 2016 because of limitations on computer processing power
+         str_detect(date, "2016"),
+         
+         # Remove other / unknown drivers as this was a minimal category that served to distract from the other primary groups in the data
+         
+         subject_race != "other/unknown",
+         
+         # Limit the data to arrests, the interesting points that are not "false-positive"
+         
+         arrest_made) %>%
+  
+   # Recode the subject_race variable such that the possible values have proper capitalizations and are more concise (important for the legend aesthetics)
+  
+  mutate(subject_race = fct_recode(subject_race, 
+                                   "White" = "white",
+                                   "Black" = "black",
+                                   "Hispanic" = "hispanic",
+                                   "Asian" = "asian/pacific islander"))
+
+# Animating each of these in series with their random, specific time did not seem very informative to me. Instead, I thought it would be most useful to be able to see snapshots of the arrest data at particular hours of the day. Thus, to do this, I had to parse out the hour value corresponding to each arrest in my data
+
+columbus2$datetimehour <- 
+  
+   # To use lubridate functions for easily extracting the minute value, combining the date and time columns of the given data was neccessary to create something recognizable as a datetime object
+  
+  paste(columbus2$date, columbus2$time) %>% 
+  
+  # Now the string created in the previous line could be parsed as a datetime
+  
+  as_datetime() %>% 
+  
+  # Lubridate functions could then be used to extract the hour value from this datetime
+  
+  hour()
+
+arrest_columbus <- st_as_sf(columbus2, 
+                             coords = c("lng", "lat"), 
+                             crs = 4326) 
+
+ggplot(data = shapes_columbus) +
+  
+  # Create the mapping, using the shapes_data from the Columbus shape file to draw a polygonal map of Columbus
+  
+  geom_sf() + 
+  
+    # Add a layer to the mapping with points at the coordinates of the 2016 arrests, making them slightly transparent to allow for visibility of slightly overlapping data, and coloring them by the race of the subject so as to provide even more information
+  
+  geom_sf(data = arrest_columbus, aes(color = subject_race, fill = subject_race), alpha = 0.5) +
+  
+  # Remove map gridlines for a cleaner plot
+  
+  coord_sf(datum=NA) +
+  
+  # Use theme_map from ggthemes for a cleaner plot
+  
+  theme_map() + 
+  
+  # Invoke gganimate to create a dynamic graphic that cycles between the different provided states, in this case the different hour values associated with the arrests in 2016
+  
+  # This is what allows the graphic to show activity over a day in 2016, ignoring the specific date
+  
+  transition_states(datetimehour) +
+  
+  # Add labels to contextualize the plot
+  
+  labs(title = "Arrest Activity in Columbus, OH Over a Day (Hour = {closest_state}:00)",
+       subtitle = "Aggregated across all dates in 2016", 
+       caption = "Source: Stanford Open Policing Project") +
+  
+    # Position legend at the bottom and with proper spacing between the legend elements
+  
+   theme(legend.position = "bottom", 
+        legend.title=element_blank(), 
+        legend.text = element_text(
+          margin = margin(r = 10, unit = "pt")))
+
+```
